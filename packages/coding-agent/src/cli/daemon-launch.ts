@@ -398,6 +398,7 @@ Then retry the original command.`,
 		process.execPath,
 		[...process.execArgv, entrypoint, "--mode", "daemon", "--daemon-socket", socketPath],
 		{
+			windowsHide: true,
 			cwd: spawnCwd ?? process.cwd(),
 			detached: true,
 			env,

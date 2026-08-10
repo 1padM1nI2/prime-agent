@@ -3128,6 +3128,7 @@ export class DaemonSupervisor {
 		delete workerEnvironment.RLM_DEPTH;
 		await this.assertRecoveryAllowed();
 		const child: ChildProcess = spawn(launch.command, launch.args, {
+			windowsHide: true,
 			cwd: createCommand.config?.cwd ?? process.cwd(),
 			detached: true,
 			env: workerEnvironment,
@@ -6925,6 +6926,7 @@ export class DaemonSupervisor {
 			delete environment[SESSION_LEASES_ENABLED_ENV];
 			delete environment[SESSION_LEASE_OWNER_ID_ENV];
 			const replacement = spawn(launch.command, launch.args, {
+				windowsHide: true,
 				cwd: this.defaultSessionConfig.cwd ?? process.cwd(),
 				detached: true,
 				env: environment,
