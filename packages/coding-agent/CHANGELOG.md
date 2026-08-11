@@ -189,6 +189,9 @@
 - Fixed sessions becoming permanently unopenable after a stale worker registration was left behind; open/resume now self-heals by finishing the old cleanup and starting a fresh worker ([#852](https://github.com/PrimeIntellect-ai/prime-agent/pull/852)).
 - Fixed Python kernel bootstrap failing in a loop on Windows by resolving the venv interpreter from `Scripts/python.exe` instead of the Unix-only `bin/python`.
 - Fixed Windows console windows flashing on every agent action by setting `windowsHide` on all child process spawns.
+- Fixed daemon startup hanging and refusing all commands (including shutdown) when adopting a stale session worker after an unclean shutdown or reboot; recovery now continues in the background while the daemon becomes ready.
+- Fixed session workers never starting in the compiled Windows binary by skipping the fd-3 startup gate on Bun for Windows, where a spawned child's extra stdio pipe is never delivered (Bun 1.3.14).
+- Fixed compiled binary archives missing the bundled `prime-agent-runtime` source, so first-time IPython kernel setup failed with "prime-agent-runtime was not found in the package registry".
 
 ## [0.7.1] - 2026-08-07
 

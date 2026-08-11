@@ -10,6 +10,7 @@ import { AgentCronJobStore } from "../src/core/cron-jobs.js";
 import { readActiveOrphanProcesses } from "../src/core/orphan-process-journal.js";
 import {
 	acquireSessionLease,
+	getProcessStartId,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 } from "../src/core/session-lease.js";
@@ -185,8 +186,8 @@ function readSupervisorConfig(agentDir: string): { defaultSessionConfig?: { sess
 	throw new Error("Supervisor config was not persisted");
 }
 
-async function connectEventually(socketPath: string, child?: ChildProcess): Promise<DaemonClient> {
-	const deadline = Date.now() + 15_000;
+async function connectEventually(socketPath: string, child?: ChildProcess, timeoutMs = 15_000): Promise<DaemonClient> {
+	const deadline = Date.now() + timeoutMs;
 	let lastError: unknown;
 	while (Date.now() < deadline) {
 		if (child && (child.exitCode !== null || child.signalCode !== null)) {
@@ -1306,6 +1307,96 @@ describe("daemon supervisor resident workers", () => {
 			}),
 		);
 	}, 60_000);
+
+	it("becomes ready while a stale worker recovers in the background", async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const sessionDir = join(agentDir, "sessions");
+		const socketPath = join(tmpdir(), `prime-supervisor-stale-adopt-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+		mkdirSync(projectDir, { recursive: true });
+		const manager = SessionManager.create(projectDir, sessionDir);
+		manager.appendMessage({ role: "user", content: "stale worker root", timestamp: 1 });
+		const sessionFile = manager.getSessionFile();
+		if (!sessionFile) {
+			throw new Error("Fixture session did not persist");
+		}
+
+		// Simulate a worker descriptor left behind by an unclean shutdown (e.g. a
+		// reboot with PID reuse): the pid is alive, but nothing listens on the
+		// recorded worker socket, so adoption stalls and full recovery retries
+		// with backoff (~15s). The daemon must answer well before that.
+		const blocker = spawn(process.execPath, [blockingProcessPath, join(root, "blocker-ready")], {
+			stdio: "ignore",
+		});
+		children.add(blocker);
+		if (!blocker.pid) {
+			throw new Error("Failed to spawn blocking fixture");
+		}
+		// The descriptor must carry the blocker's verified process identity, or
+		// recovery refuses to replace the live process and never relaunches.
+		const blockerStartId = getProcessStartId(blocker.pid);
+		if (!blockerStartId) {
+			throw new Error("Blocking fixture did not expose a process start id");
+		}
+
+		const workerId = randomUUID().replaceAll("-", "");
+		const descriptorDir = join(
+			agentDir,
+			"daemon-workers",
+			createHash("sha256").update(socketPath).digest("hex").slice(0, 12),
+		);
+		mkdirSync(descriptorDir, { recursive: true });
+		const now = new Date().toISOString();
+		const descriptor: DaemonWorkerDescriptor = {
+			version: 1,
+			workerId,
+			pid: blocker.pid,
+			processStartId: blockerStartId,
+			socketPath: join(tmpdir(), `prime-worker-stale-${process.pid}-${randomUUID().slice(0, 8)}.sock`),
+			recoveryJournalPath: join(descriptorDir, `${workerId}.recovery.jsonl`),
+			orphanProcessJournalPath: join(descriptorDir, `${workerId}.orphans.jsonl`),
+			supervisorSocketPath: socketPath,
+			authenticationToken: randomUUID(),
+			rootActiveSessionId: randomUUID().replaceAll("-", ""),
+			createdAt: now,
+			updatedAt: now,
+			lifecycle: "ready",
+			createCommand: {
+				type: "create",
+				sessionPath: sessionFile,
+			},
+			consecutiveFailures: 0,
+		};
+		writeFileSync(join(descriptorDir, `${workerId}.json`), `${JSON.stringify(descriptor, null, 2)}\n`);
+
+		const supervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, supervisor, 10_000);
+		const listed = await client.request({ type: "list" });
+		expect(listed.success).toBe(true);
+
+		// The stale worker keeps recovering in the background and eventually
+		// relaunches, exposing the session under a fresh worker pid.
+		const deadline = Date.now() + 60_000;
+		let adoptedPid: number | undefined;
+		while (Date.now() < deadline) {
+			const polled = await client.request({ type: "list" });
+			const sessions = polled.success ? requireSessionList(polled.data) : [];
+			const match = sessions.find((summary) => summary.workerPid !== undefined && summary.workerPid !== blocker.pid);
+			if (match?.workerPid) {
+				adoptedPid = match.workerPid;
+				break;
+			}
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+		}
+		if (!adoptedPid) {
+			throw new Error(`Stale worker did not recover in the background\n${readDaemonLogs(agentDir)}`);
+		}
+		workerPids.add(adoptedPid);
+		await client.request({ type: "shutdown" });
+		client.close();
+		await waitForSocketGone(socketPath);
+	}, 90_000);
 
 	it("hosts resident roots in isolated worker processes without a session cap", {
 		tags: ["process-stress"],

@@ -21,6 +21,7 @@ import {
 	getDaemonLogPath,
 	getDaemonUpdateRestartManifestPath,
 	getSessionsDir,
+	isBunRuntime,
 	VERSION,
 } from "../../config.js";
 import {
@@ -3127,6 +3128,10 @@ export class DaemonSupervisor {
 		});
 		delete workerEnvironment.RLM_DEPTH;
 		await this.assertRecoveryAllowed();
+		// Bun on Windows never delivers a spawned child's extra stdio pipe to the
+		// child, so a worker would block forever reading the startup gate. Skip
+		// the gate there; the error paths below still stop the worker process.
+		const useStartupGate = !(isBunRuntime && process.platform === "win32");
 		const child: ChildProcess = spawn(launch.command, launch.args, {
 			windowsHide: true,
 			cwd: createCommand.config?.cwd ?? process.cwd(),
@@ -3156,7 +3161,7 @@ export class DaemonSupervisor {
 			);
 		});
 		// A failed spawn (e.g. EMFILE) leaves child.stdio undefined.
-		const startupGate = child.stdio?.[WORKER_STARTUP_GATE_FD];
+		const startupGate = useStartupGate ? child.stdio?.[WORKER_STARTUP_GATE_FD] : undefined;
 		const previousDescriptor = existing?.descriptor;
 		const previousIntentionalStop = existing?.intentionalStop;
 		let descriptorAssigned = false;
@@ -3171,7 +3176,7 @@ export class DaemonSupervisor {
 			if (!child.pid) {
 				throw new Error("Failed to obtain daemon session worker pid");
 			}
-			if (!(startupGate instanceof Writable)) {
+			if (useStartupGate && !(startupGate instanceof Writable)) {
 				throw new Error("Failed to create daemon session worker startup gate");
 			}
 			childPid = child.pid;
@@ -3243,9 +3248,11 @@ export class DaemonSupervisor {
 
 		try {
 			try {
-				await commitWorkerStartupGate(startupGate);
+				if (startupGate instanceof Writable) {
+					await commitWorkerStartupGate(startupGate);
+				}
 			} catch (error) {
-				startupGate.destroy();
+				startupGate?.destroy();
 				await childClosed;
 				throw error;
 			} finally {

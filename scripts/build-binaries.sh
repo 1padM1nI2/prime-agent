@@ -121,6 +121,10 @@ for platform in "${PLATFORMS[@]}"; do
     cp README.md binaries/$platform/
     cp CHANGELOG.md binaries/$platform/
     cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm binaries/$platform/
+    # The kernel bootstrap installs prime-agent-runtime from this local source
+    # (it is not on PyPI); without it first-time IPython setup fails.
+    mkdir -p binaries/$platform/dist
+    cp -r dist/prime-agent-runtime binaries/$platform/dist/
     mkdir -p binaries/$platform/theme
     cp dist/modes/interactive/theme/*.json binaries/$platform/theme/
     mkdir -p binaries/$platform/assets
