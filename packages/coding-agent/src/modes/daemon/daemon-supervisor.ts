@@ -3360,7 +3360,11 @@ export class DaemonSupervisor {
 			const client = new DaemonWorkerClient(worker.descriptor.socketPath);
 			try {
 				await client.connect(Math.min(500, Math.max(50, deadline - Date.now())));
-				await client.waitForHello(1000);
+				// Worker auth verifies the supervisor claim with a synchronous
+				// PowerShell process-start query on Windows, which can take over
+				// a second on a busy machine; give it room within the deadline.
+				const handshakeBudget = Math.min(10_000, Math.max(50, deadline - Date.now()));
+				await client.waitForHello(handshakeBudget);
 				// Listen before authenticating: the worker flushes its roster snapshot right after auth succeeds.
 				client.onFrame((frame) => this.handleWorkerFrame(worker, frame, client));
 				client.onClose((error) => void this.handleWorkerClose(worker, client, error));
@@ -3374,7 +3378,7 @@ export class DaemonSupervisor {
 								? { workerInstanceId: worker.descriptor.workerInstanceId }
 								: {}),
 						},
-						1000,
+						handshakeBudget,
 					);
 					await this.assertRecoveryAllowed();
 					if (!workerAuthAdvertisesRoster(authResponse.data)) {

@@ -121,6 +121,7 @@ function runProcessQuery(command: string, args: string[], options?: ProcessQuery
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
 		env: options?.env,
+		windowsHide: true,
 	});
 }
 
@@ -298,7 +299,9 @@ export function acquireSessionLease(
 			} catch (error) {
 				rmSync(candidateDirectory, { recursive: true, force: true });
 				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+				// Windows reports EPERM when the rename target is an existing
+				// non-empty directory; POSIX reports EEXIST/ENOTEMPTY.
+				if (code !== "EEXIST" && code !== "ENOTEMPTY" && !(process.platform === "win32" && code === "EPERM")) {
 					throw error;
 				}
 				const existingOwner = readLeaseOwner(directory);

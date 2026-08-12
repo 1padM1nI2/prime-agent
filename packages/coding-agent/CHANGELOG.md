@@ -170,6 +170,10 @@
 - Restored bare `prime-agent --resume` opening the agents view and the `/resume [id|path]` slash command; bare commands open the agents view and an argument resumes that session in place.
 - Fixed URLs not opening on click in fullscreen mode on terminals such as Ghostty; clicking a link in the transcript, dock, or overlays now opens it in the browser.
 - Fixed ctrl+p ("Toggle agent message expansion") only toggling received agent messages; it now expands and collapses sent agent messages together with received ones.
+- Fixed session workers failing to start on Windows after an unclean shutdown left a stale session lease behind; lease recovery now handles the Windows EPERM rename semantics, so stale leases are reclaimed and busy sessions report the proper "session already active" error.
+- Fixed new sessions failing with a 30s `create` timeout on Windows when the worker authentication handshake exceeded its 1s budget due to a synchronous PowerShell process-start query; the handshake budget now scales up to 10s within the connect deadline.
+- Fixed `ack_result` failing with an fsync EPERM error on Windows by tolerating platforms that cannot fsync a directory handle after the journal's atomic rename.
+- Fixed flashing PowerShell console windows on Windows daemon startup by hiding the process-start query subprocess window.
 
 ## [0.7.2] - 2026-08-11
 
