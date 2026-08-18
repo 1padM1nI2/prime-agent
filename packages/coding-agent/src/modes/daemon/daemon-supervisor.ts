@@ -3112,6 +3112,10 @@ export class DaemonSupervisor {
 		const orphanProcessJournalPath =
 			existing?.descriptor.orphanProcessJournalPath ?? join(this.descriptorDir, `${workerId}.orphans.jsonl`);
 		const launch = createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]);
+		// Bun on Windows never delivers a spawned child's extra stdio pipe to the
+		// child, so a worker would block forever reading the startup gate. Skip
+		// the gate there; the error paths below still stop the worker process.
+		const useStartupGate = !(isBunRuntime && process.platform === "win32");
 		const workerEnvironment = createCliSubprocessEnv({
 			...process.env,
 			...launchEnv,
@@ -3121,23 +3125,19 @@ export class DaemonSupervisor {
 			[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV]: rootActiveSessionId,
 			[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV]: this.socketPath,
 			[DAEMON_WORKER_RECOVERY_JOURNAL_ENV]: recoveryJournalPath,
-			[DAEMON_WORKER_STARTUP_GATE_FD_ENV]: String(WORKER_STARTUP_GATE_FD),
+			...(useStartupGate ? { [DAEMON_WORKER_STARTUP_GATE_FD_ENV]: String(WORKER_STARTUP_GATE_FD) } : {}),
 			[ORPHAN_PROCESS_JOURNAL_ENV]: orphanProcessJournalPath,
 			[SESSION_LEASES_ENABLED_ENV]: "1",
 			[SESSION_LEASE_OWNER_ID_ENV]: rootActiveSessionId,
 		});
 		delete workerEnvironment.RLM_DEPTH;
 		await this.assertRecoveryAllowed();
-		// Bun on Windows never delivers a spawned child's extra stdio pipe to the
-		// child, so a worker would block forever reading the startup gate. Skip
-		// the gate there; the error paths below still stop the worker process.
-		const useStartupGate = !(isBunRuntime && process.platform === "win32");
 		const child: ChildProcess = spawn(launch.command, launch.args, {
 			windowsHide: true,
 			cwd: createCommand.config?.cwd ?? process.cwd(),
 			detached: true,
 			env: workerEnvironment,
-			stdio: ["ignore", "ignore", "pipe", "pipe"],
+			stdio: useStartupGate ? ["ignore", "ignore", "pipe", "pipe"] : ["ignore", "ignore", "pipe"],
 		});
 		const detachWorkerStderr = child.stderr
 			? attachJsonlLineReader(child.stderr, (line) => this.log(`Session worker ${workerId} stderr: ${line}`), {
