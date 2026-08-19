@@ -2992,9 +2992,11 @@ export class DaemonSupervisor {
 	/**
 	 * A stopping worker whose process already died can strand its registration
 	 * (for example when the stop timed out and its finalization was interrupted
-	 * by a supervisor restart). Such a registration would block reopening the
-	 * saved transcript forever, so complete the interrupted stop and let the
-	 * caller launch a fresh worker for the saved session.
+	 * by a supervisor restart). A worker killed outright (SIGKILL, power loss,
+	 * supervisor death) never even recorded the stop and strands its session
+	 * the same way. Whenever the recorded process is confirmed gone or its pid
+	 * was recycled, complete the interrupted stop and let the caller launch a
+	 * fresh worker for the saved session.
 	 */
 	private async reclaimStaleWorkerRegistration(worker: ResidentWorker, freshCreate = false): Promise<boolean> {
 		if (worker.client !== undefined || worker.recovery !== undefined) {
@@ -3027,6 +3029,11 @@ export class DaemonSupervisor {
 		const identity = this.processIdentity(worker.descriptor.pid, worker.descriptor.processStartId);
 		if (identity !== "gone" && identity !== "replaced") {
 			return false;
+		}
+		if (worker.descriptor.stopRequestedAt === undefined) {
+			// The abrupt-death case: mark the stop so the identity-aware
+			// finalizer accepts this generation and removes the registration.
+			worker.descriptor.stopRequestedAt = new Date().toISOString();
 		}
 		// Single cleanup path: the background stop finalizer is identity-aware,
 		// retrying, and single-flighted, so concurrent resumes share one stop.

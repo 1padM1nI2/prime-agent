@@ -17,6 +17,7 @@ import {
 import { readSessionInfo, SessionManager } from "../src/core/session-manager.js";
 import { DaemonAgentConnection } from "../src/modes/agent-connection/daemon-agent-connection.js";
 import { DaemonClient, getDaemonSocketCloseReason } from "../src/modes/daemon/daemon-client.js";
+import type { DaemonResponse } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import {
 	type DaemonWorkerDescriptor,
@@ -1151,6 +1152,97 @@ describe("daemon supervisor resident workers", () => {
 		if (resumedSummary.workerPid) {
 			await waitForProcessGone(resumedSummary.workerPid);
 			workerPids.delete(resumedSummary.workerPid);
+		}
+	});
+
+	it("reclaims the registration of a worker killed outright without a stop request", {
+		tags: ["process-stress"],
+		timeout: 30_000,
+	}, async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const sessionDir = join(agentDir, "sessions");
+		const socketPath = join(tmpdir(), `prime-supervisor-abrupt-kill-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+		mkdirSync(projectDir, { recursive: true });
+		const sessionManager = SessionManager.create(projectDir, sessionDir);
+		sessionManager.appendMessage({ role: "user", content: "abrupt kill", timestamp: 1 });
+		sessionManager.appendSessionState({ status: "active" });
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) {
+			throw new Error("Fixture session did not persist");
+		}
+
+		const firstSupervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, firstSupervisor);
+		const firstSupervisorPid = client.hello?.supervisorPid;
+		if (!firstSupervisorPid) {
+			throw new Error("Daemon hello did not expose its supervisor pid");
+		}
+		const created = await client.request({
+			type: "create",
+			sessionPath: sessionFile,
+			lifecycle: "client_owned",
+			config: { cwd: projectDir, agentDir, sessionDir, noTools: true, noExtensions: true },
+		});
+		if (!created.success) {
+			throw new Error(created.error);
+		}
+		const summary = requireSummary(created.data);
+		if (!summary.workerPid) {
+			throw new Error("Resident worker did not expose its pid");
+		}
+		workerPids.add(summary.workerPid);
+
+		// SIGKILL worker and supervisor without any stop request: the worker
+		// descriptor left on disk has no stopRequestedAt. A resume that cannot
+		// reclaim this registration strands the session as "already active"
+		// forever (observed on Windows after taskkill / power loss).
+		process.kill(summary.workerPid, "SIGKILL");
+		process.kill(firstSupervisorPid, "SIGKILL");
+		await waitForExit(firstSupervisor);
+		children.delete(firstSupervisor);
+		client.close();
+		await waitForProcessGone(summary.workerPid);
+		workerPids.delete(summary.workerPid);
+
+		const descriptor = readWorkerDescriptor(agentDir);
+		expect(descriptor.stopRequestedAt).toBeUndefined();
+
+		const replacementSupervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const replacementClient = await connectEventually(socketPath, replacementSupervisor);
+		try {
+			// Adoption of the dead worker fails and asynchronous recovery may
+			// race the resume; the user-visible contract is eventual success.
+			// Real delay: recovery runs in separate OS processes, fake timers
+			// cannot reach them.
+			let resumed: DaemonResponse | undefined;
+			for (let attempt = 0; attempt < 40; attempt++) {
+				resumed = await replacementClient.request({
+					type: "create",
+					sessionPath: sessionFile,
+					config: { cwd: projectDir, agentDir, sessionDir, noTools: true, noExtensions: true },
+				});
+				if (resumed.success) {
+					break;
+				}
+				await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+			}
+			expect(resumed?.success).toBe(true);
+			const resumedSummary = requireSummary(resumed?.success ? resumed.data : undefined);
+			expect(resumedSummary.sessionId).toBe(summary.sessionId);
+			if (resumedSummary.workerPid) {
+				workerPids.add(resumedSummary.workerPid);
+			}
+			await replacementClient.request({ type: "shutdown" });
+			replacementClient.close();
+			await waitForSocketGone(socketPath);
+			if (resumedSummary.workerPid) {
+				await waitForProcessGone(resumedSummary.workerPid);
+				workerPids.delete(resumedSummary.workerPid);
+			}
+		} finally {
+			replacementClient.close();
 		}
 	});
 

@@ -148,6 +148,7 @@
 - Changed RLM guidance to orchestrate independent workers in parallel, use available async shell helpers safely, end the turn instead of sleeping, polling, or blocking on long awaits, provide proactive outcome-focused progress updates from root agents, and use simplified technical English for user-facing prose.
 - Fixed new top-level daemon sessions inheriting an RLM child depth from the supervisor process.
 - Fixed active goals stalling after a mid-goal automatic compaction when the previous continuation prompt was already running: only undelivered continuations deduplicate, so a fresh continuation is queued instead of being suppressed.
+- Fixed sessions staying permanently "already active" after their worker process was killed without a clean stop (for example taskkill or power loss on Windows): the supervisor now reclaims the registration once the recorded process is confirmed gone, even when no stop was ever requested.
 
 ## [0.7.3] - 2026-08-17
 
