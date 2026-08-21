@@ -1,0 +1,1 @@
+- Fixed resuming a session with multiple stale worker registrations failing as "Ambiguous active session": dead registrations are now reclaimed before ambiguity is reported.

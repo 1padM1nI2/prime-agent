@@ -2852,14 +2852,20 @@ export class DaemonSupervisor {
 		}
 		const ownerClientId = command.lifecycle === "client_owned" ? clientId : undefined;
 		if (command.sessionPath) {
-			const activeMatches = this.matchWorkers(command.sessionPath);
-			if (
-				activeMatches.length === 1 &&
-				!(await this.reclaimStaleWorkerRegistration(activeMatches[0]!.worker, command.launchEnv !== undefined))
-			) {
-				return this.reuseWorkerForCreate(activeMatches[0]!.worker, ownerClientId, command.sessionPath);
+			// Multiple stale registrations can accumulate for one session when
+			// workers die abruptly (taskkill, power loss). Reclaim each dead
+			// registration before declaring the session ambiguous.
+			const liveMatches = [];
+			for (const match of this.matchWorkers(command.sessionPath)) {
+				if (await this.reclaimStaleWorkerRegistration(match.worker, command.launchEnv !== undefined)) {
+					continue;
+				}
+				liveMatches.push(match);
 			}
-			if (activeMatches.length > 1) {
+			if (liveMatches.length === 1) {
+				return this.reuseWorkerForCreate(liveMatches[0]!.worker, ownerClientId, command.sessionPath);
+			}
+			if (liveMatches.length > 1) {
 				throw new Error(`Ambiguous active session "${command.sessionPath}"`);
 			}
 			const config = mergeAgentSessionRuntimeConfig(this.defaultSessionConfig, command.config);

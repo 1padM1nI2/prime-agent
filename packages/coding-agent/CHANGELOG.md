@@ -148,7 +148,6 @@
 - Changed RLM guidance to orchestrate independent workers in parallel, use available async shell helpers safely, end the turn instead of sleeping, polling, or blocking on long awaits, provide proactive outcome-focused progress updates from root agents, and use simplified technical English for user-facing prose.
 - Fixed new top-level daemon sessions inheriting an RLM child depth from the supervisor process.
 - Fixed active goals stalling after a mid-goal automatic compaction when the previous continuation prompt was already running: only undelivered continuations deduplicate, so a fresh continuation is queued instead of being suppressed.
-- Fixed sessions staying permanently "already active" after their worker process was killed without a clean stop (for example taskkill or power loss on Windows): the supervisor now reclaims the registration once the recorded process is confirmed gone, even when no stop was ever requested.
 
 ## [0.7.3] - 2026-08-17
 
@@ -171,10 +170,6 @@
 - Restored bare `prime-agent --resume` opening the agents view and the `/resume [id|path]` slash command; bare commands open the agents view and an argument resumes that session in place.
 - Fixed URLs not opening on click in fullscreen mode on terminals such as Ghostty; clicking a link in the transcript, dock, or overlays now opens it in the browser.
 - Fixed ctrl+p ("Toggle agent message expansion") only toggling received agent messages; it now expands and collapses sent agent messages together with received ones.
-- Fixed session workers failing to start on Windows after an unclean shutdown left a stale session lease behind; lease recovery now handles the Windows EPERM rename semantics, so stale leases are reclaimed and busy sessions report the proper "session already active" error.
-- Fixed new sessions failing with a 30s `create` timeout on Windows when the worker authentication handshake exceeded its 1s budget due to a synchronous PowerShell process-start query; the handshake budget now scales up to 10s within the connect deadline.
-- Fixed `ack_result` failing with an fsync EPERM error on Windows by tolerating platforms that cannot fsync a directory handle after the journal's atomic rename.
-- Fixed flashing PowerShell console windows on Windows daemon startup by hiding the process-start query subprocess window.
 
 ## [0.7.2] - 2026-08-11
 
@@ -192,11 +187,6 @@
 - Fixed workers with no live connection reporting as `ready`; stopping workers now report a `stopping` state, are hidden from live sessions, and no longer receive daemon-wide commands ([#850](https://github.com/PrimeIntellect-ai/prime-agent/pull/850)).
 - Fixed timed-out worker stops stranding dead-but-registered workers ("Session worker is not connected"); stops now finalize in the background once the process exits, and zombie processes are no longer counted as alive ([#851](https://github.com/PrimeIntellect-ai/prime-agent/pull/851)).
 - Fixed sessions becoming permanently unopenable after a stale worker registration was left behind; open/resume now self-heals by finishing the old cleanup and starting a fresh worker ([#852](https://github.com/PrimeIntellect-ai/prime-agent/pull/852)).
-- Fixed Python kernel bootstrap failing in a loop on Windows by resolving the venv interpreter from `Scripts/python.exe` instead of the Unix-only `bin/python`.
-- Fixed Windows console windows flashing on every agent action by setting `windowsHide` on all child process spawns.
-- Fixed daemon startup hanging and refusing all commands (including shutdown) when adopting a stale session worker after an unclean shutdown or reboot; recovery now continues in the background while the daemon becomes ready.
-- Fixed session workers never starting in the compiled Windows binary by skipping the fd-3 startup gate on Bun for Windows, where a spawned child's extra stdio pipe is never delivered (Bun 1.3.14).
-- Fixed compiled binary archives missing the bundled `prime-agent-runtime` source, so first-time IPython kernel setup failed with "prime-agent-runtime was not found in the package registry".
 
 ## [0.7.1] - 2026-08-07
 

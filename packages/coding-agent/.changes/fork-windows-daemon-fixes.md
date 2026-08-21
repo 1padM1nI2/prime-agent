@@ -1,0 +1,5 @@
+- Fixed session workers failing to start on Windows after an unclean shutdown left a stale session lease behind; lease recovery now handles the Windows EPERM rename semantics, so stale leases are reclaimed and busy sessions report the proper "session already active" error.
+- Fixed new sessions failing with a 30s `create` timeout on Windows when the worker authentication handshake exceeded its 1s budget due to a synchronous PowerShell process-start query; the handshake budget now scales up to 10s within the connect deadline.
+- Fixed `ack_result` failing with an fsync EPERM error on Windows by tolerating platforms that cannot fsync a directory handle after the journal's atomic rename.
+- Fixed flashing PowerShell console windows on Windows daemon startup by hiding the process-start query subprocess window.
+- Fixed Python kernel bootstrap failing in a loop on Windows by resolving the venv interpreter from `Scripts/python.exe` instead of the Unix-only `bin/python`.
