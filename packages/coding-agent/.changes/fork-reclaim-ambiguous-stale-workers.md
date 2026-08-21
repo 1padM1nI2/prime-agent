@@ -1,1 +1,2 @@
 - Fixed resuming a session with multiple stale worker registrations failing as "Ambiguous active session": dead registrations are now reclaimed before ambiguity is reported.
+- Fixed resuming a session right after an unclean shutdown failing with a spurious "already active" or "ambiguous" error while worker recovery was still in flight; creates now wait briefly for the recovery to settle before judging the registration.

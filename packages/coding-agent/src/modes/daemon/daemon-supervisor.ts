@@ -2873,6 +2873,20 @@ export class DaemonSupervisor {
 				? resolve(command.sessionPath)
 				: await this.catalog.resolve(command.sessionPath, config.cwd ?? process.cwd(), config.sessionDir);
 			createCommand = { ...createCommand, sessionPath };
+			const existingWorkers = this.findWorkersBySessionFile(sessionPath);
+			const liveExisting: ResidentWorker[] = [];
+			for (const worker of existingWorkers) {
+				if (await this.reclaimStaleWorkerRegistration(worker, command.launchEnv !== undefined)) {
+					continue;
+				}
+				liveExisting.push(worker);
+			}
+			if (liveExisting.length === 1) {
+				return this.reuseWorkerForCreate(liveExisting[0]!, ownerClientId, sessionPath);
+			}
+			if (liveExisting.length > 1) {
+				throw new Error(`Ambiguous resident session path "${sessionPath}"`);
+			}
 		}
 		const key = createCommand.sessionPath
 			? canonicalSessionPath(createCommand.sessionPath)
@@ -3005,8 +3019,18 @@ export class DaemonSupervisor {
 	 * fresh worker for the saved session.
 	 */
 	private async reclaimStaleWorkerRegistration(worker: ResidentWorker, freshCreate = false): Promise<boolean> {
-		if (worker.client !== undefined || worker.recovery !== undefined) {
+		if (worker.client !== undefined) {
 			return false;
+		}
+		if (worker.recovery !== undefined) {
+			// A recovery triggered by a failed adoption may still relaunch the
+			// worker. Wait (bounded) for it to settle before judging the
+			// registration; a create arriving during this window would
+			// otherwise see a spurious "already active"/"ambiguous" error.
+			await Promise.race([worker.recovery.catch(() => undefined), unrefDelay(STALE_RECLAIM_WAIT_MS)]);
+			if (worker.recovery !== undefined) {
+				return false;
+			}
 		}
 		if (worker.descriptor.stopRequestedAt === undefined) {
 			if (worker.descriptor.lifecycle !== "failed" || worker.descriptor.ownerClientId) {
@@ -4925,7 +4949,7 @@ export class DaemonSupervisor {
 		});
 	}
 
-	private findWorkerBySessionFile(sessionFile: string, exclude?: ResidentWorker): ResidentWorker | undefined {
+	private findWorkersBySessionFile(sessionFile: string, exclude?: ResidentWorker): ResidentWorker[] {
 		const target = canonicalSessionPath(sessionFile);
 		const targetEntry = this.roster().bySessionFile(target);
 		const matches = new Set<ResidentWorker>();
@@ -4945,10 +4969,15 @@ export class DaemonSupervisor {
 			}
 			matches.add(worker);
 		}
-		if (matches.size > 1) {
+		return [...matches];
+	}
+
+	private findWorkerBySessionFile(sessionFile: string, exclude?: ResidentWorker): ResidentWorker | undefined {
+		const matches = this.findWorkersBySessionFile(sessionFile, exclude);
+		if (matches.length > 1) {
 			throw new Error(`Ambiguous resident session path "${sessionFile}"`);
 		}
-		return matches.values().next().value;
+		return matches[0];
 	}
 
 	private async forwardToWorker(
