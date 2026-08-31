@@ -25,6 +25,7 @@
 - Added provider-derived reasoning levels for OpenRouter and Prime Inference models, including sparse, mandatory, toggle-only, and explicit-off capabilities.
 - Added Qwen 3.8 Max to the featured Prime Inference catalog ([#1247](https://github.com/PrimeIntellect-ai/prime-agent/pull/1247) by [@eliebak](https://github.com/eliebak)).
 - Refreshed generated provider catalogs, removed retired routes, and aligned provider defaults and cross-provider handoff fixtures with models currently served.
+- Added `MODELS_DEV_API_JSON` env var to `generate-models.ts` to regenerate the catalog from a local models.dev api.json snapshot when models.dev is unreachable.
 
 ## [0.7.2] - 2026-08-11
 

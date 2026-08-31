@@ -875,8 +875,12 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 async function loadModelsDevData(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from models.dev API...");
-		const response = await fetch("https://models.dev/api.json");
-		const data = await response.json();
+		// MODELS_DEV_API_JSON: path to a local api.json snapshot, for offline runs
+		// or networks where models.dev is unreachable.
+		const snapshotPath = process.env.MODELS_DEV_API_JSON;
+		const data = snapshotPath
+			? JSON.parse(readFileSync(snapshotPath, "utf-8"))
+			: await (await fetch("https://models.dev/api.json")).json();
 
 		const models: Model<any>[] = [];
 
