@@ -276,6 +276,7 @@ export async function processResponsesStream<TApi extends Api>(
 	let currentBlock: ThinkingContent | TextContent | (ToolCall & { partialJson: string }) | null = null;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
+	let sawTerminalEvent = false;
 
 	for await (const event of openaiStream) {
 		if (event.type === "response.created") {
@@ -470,6 +471,7 @@ export async function processResponsesStream<TApi extends Api>(
 				stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
 			}
 		} else if (event.type === "response.completed") {
+			sawTerminalEvent = true;
 			const response = event.response;
 			if (response?.id) {
 				output.responseId = response.id;
@@ -519,6 +521,11 @@ export async function processResponsesStream<TApi extends Api>(
 				providerErrorType,
 			});
 		}
+	}
+	if (!sawTerminalEvent) {
+		throw new StreamFailureError("Responses stream ended before response.completed", {
+			kind: "malformed_response",
+		});
 	}
 }
 

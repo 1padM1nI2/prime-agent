@@ -35,6 +35,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
+import { StreamFailureError } from "../utils/stream-failure.js";
 import { isCloudflareProvider, resolveCloudflareBaseUrl } from "./cloudflare.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { buildBaseOptions } from "./simple-options.js";
@@ -296,6 +297,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 				return block;
 			};
 
+			let sawFinishReason = false;
 			for await (const chunk of openaiStream) {
 				if (!chunk || typeof chunk !== "object") continue;
 
@@ -319,6 +321,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 				}
 
 				if (choice.finish_reason) {
+					sawFinishReason = true;
 					const finishReasonResult = mapStopReason(choice.finish_reason);
 					output.stopReason = finishReasonResult.stopReason;
 					if (finishReasonResult.errorMessage) {
@@ -450,6 +453,11 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 
 			for (const block of blocks) {
 				finishBlock(block);
+			}
+			if (!sawFinishReason && !options?.signal?.aborted) {
+				throw new StreamFailureError("Completions stream ended before finish_reason", {
+					kind: "malformed_response",
+				});
 			}
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");

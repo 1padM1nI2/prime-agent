@@ -1,0 +1,1 @@
+- Fixed prematurely terminated streams from OpenAI-compatible providers being reported as successful empty responses instead of retryable errors.
