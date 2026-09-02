@@ -195,6 +195,24 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(calls[1]?.sessionConfig).toBe(sessionConfig);
 	});
 
+	it("preserves the RLM heartbeat controller when replacing a session", async () => {
+		const controller = {
+			listRlmHeartbeats: () => [],
+			createRlmHeartbeat: () => {
+				throw new Error("unexpected heartbeat creation");
+			},
+			updateRlmHeartbeat: () => undefined,
+			deleteRlmHeartbeat: () => undefined,
+		};
+		const { runtime } = await createRuntimeForTest(() => {}, {
+			sessionOptions: { rlmHeartbeatController: controller },
+		});
+
+		await runtime.newSession();
+
+		expect(runtime.session.handleRlmHeartbeatHostRequest("rlm_heartbeat.list")).toEqual({ heartbeats: [] });
+	});
+
 	it("copies depth across new-session parent reference edges", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
 		const parentSession = runtime.session.sessionFile;

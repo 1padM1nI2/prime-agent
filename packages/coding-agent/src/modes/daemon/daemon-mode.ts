@@ -2090,6 +2090,21 @@ export class AgentDaemon {
 		}
 	}
 
+	private cancelHeartbeatsForSessionReplacement(state: ActiveSessionState): void {
+		const session = state.runtime.session;
+		const cancelled = this.cronStore.cancelHeartbeatsForSession({
+			activeSessionId: state.activeSessionId,
+			sessionId: session.sessionId,
+			sessionFile: session.sessionFile,
+		});
+		for (const job of cancelled) {
+			this.removeQueuedHeartbeatFollowUp(state, job);
+		}
+		if (cancelled.length > 0) {
+			this.cronScheduler.wake();
+		}
+	}
+
 	private cancelScheduledJobsForSession(state: ActiveSessionState): void {
 		const session = state.runtime.session;
 		const target: {
@@ -4913,7 +4928,10 @@ export class AgentDaemon {
 
 			case "new_session": {
 				const state = this.getSessionState(command.activeSessionId);
-				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
+				const options = {
+					...(command.parentSession ? { parentSession: command.parentSession } : {}),
+					beforeReplacement: () => this.cancelHeartbeatsForSessionReplacement(state),
+				};
 				const result = await state.runtime.newSession(options);
 				this.rebindCronJobsToState(state);
 				return success(command.id, "new_session", result);

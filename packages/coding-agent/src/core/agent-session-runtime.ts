@@ -70,6 +70,10 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	private readonly sessionReplacedListeners = new Set<(session: AgentSession) => void | Promise<void>>();
 	private runtimeEnvScope?: <T>(fn: () => Promise<T>) => Promise<T>;
 	private beforeSessionInvalidate?: () => void;
+	private readonly sessionReplacementOptions?: Pick<
+		AgentSessionCreationOptions,
+		"agentMessageController" | "agentObserveController" | "rlmHeartbeatController"
+	>;
 	private subagentRuntimeHost?: SubagentRuntimeHost;
 	private subagentRuntimes = new Map<string, AgentSessionRuntime>();
 	private disposePromise?: Promise<void>;
@@ -86,7 +90,16 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 			createdAt: Date.now(),
 		},
 		private _sessionLease?: SessionLease,
+		sessionOptions?: AgentSessionCreationOptions,
 	) {
+		const { agentMessageController, agentObserveController, rlmHeartbeatController } = sessionOptions ?? {};
+		if (agentMessageController || agentObserveController || rlmHeartbeatController) {
+			this.sessionReplacementOptions = {
+				agentMessageController,
+				agentObserveController,
+				rlmHeartbeatController,
+			};
+		}
 		this.bindRuntimeHost();
 	}
 
@@ -144,6 +157,10 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 
 	private scopedBuild<T>(fn: () => Promise<T>): Promise<T> {
 		return this.runtimeEnvScope ? this.runtimeEnvScope(fn) : fn();
+	}
+
+	private replacementSessionOptions(): AgentSessionCreationOptions | undefined {
+		return this.sessionReplacementOptions;
 	}
 
 	setSubagentRuntimeHost(host?: SubagentRuntimeHost): void {
@@ -442,6 +459,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							previousSessionFile,
 						},
 						sessionConfig: this.sessionConfig,
+						sessionOptions: this.replacementSessionOptions(),
 					}),
 				),
 			lease,
@@ -454,11 +472,13 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		parentSession?: string;
 		setup?: (sessionManager: SessionManager) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+		beforeReplacement?: () => void | Promise<void>;
 	}): Promise<{ cancelled: boolean }> {
 		const beforeResult = await this.emitBeforeSwitch("new");
 		if (beforeResult.cancelled) {
 			return beforeResult;
 		}
+		await options?.beforeReplacement?.();
 
 		const previousSessionFile = this.session.sessionFile;
 		const sessionDir = this.session.sessionManager.getSessionDir();
@@ -485,6 +505,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							previousSessionFile,
 						},
 						sessionConfig: this.sessionConfig,
+						sessionOptions: this.replacementSessionOptions(),
 					}),
 				),
 			lease,
@@ -556,6 +577,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 									previousSessionFile,
 								},
 								sessionConfig: this.sessionConfig,
+								sessionOptions: this.replacementSessionOptions(),
 							}),
 						),
 					lease,
@@ -585,6 +607,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 								previousSessionFile,
 							},
 							sessionConfig: this.sessionConfig,
+							sessionOptions: this.replacementSessionOptions(),
 						}),
 					),
 				lease,
@@ -618,6 +641,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							previousSessionFile,
 						},
 						sessionConfig: this.sessionConfig,
+						sessionOptions: this.replacementSessionOptions(),
 					}),
 				),
 			lease,
@@ -678,6 +702,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							previousSessionFile,
 						},
 						sessionConfig: this.sessionConfig,
+						sessionOptions: this.replacementSessionOptions(),
 					}),
 				),
 			lease,
@@ -757,6 +782,7 @@ export async function createAgentSessionRuntime(
 			runtimeOptions.sessionConfig,
 			runtimeOptions.runtimeMetadata,
 			lease,
+			runtimeOptions.sessionOptions,
 		);
 	} catch (error) {
 		lease?.release();
