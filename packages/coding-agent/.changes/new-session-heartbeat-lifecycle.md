@@ -1,0 +1,1 @@
+- Fixed `/new` leaving heartbeats active from the replaced session.
