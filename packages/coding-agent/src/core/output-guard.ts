@@ -4,7 +4,12 @@ interface StdoutTakeoverState {
 	originalStdoutWrite: typeof process.stdout.write;
 }
 
+interface StderrTakeoverState {
+	originalStderrWrite: typeof process.stderr.write;
+}
+
 let stdoutTakeoverState: StdoutTakeoverState | undefined;
+let stderrTakeoverState: StderrTakeoverState | undefined;
 
 export function takeOverStdout(): void {
 	if (stdoutTakeoverState) {
@@ -40,6 +45,35 @@ export function restoreStdout(): void {
 
 	process.stdout.write = stdoutTakeoverState.originalStdoutWrite;
 	stdoutTakeoverState = undefined;
+}
+
+export function takeOverStderr(onWrite: (text: string) => void): void {
+	if (stderrTakeoverState) {
+		return;
+	}
+
+	const originalStderrWrite = process.stderr.write;
+	process.stderr.write = ((
+		chunk: string | Uint8Array,
+		encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+		callback?: (error?: Error | null) => void,
+	): boolean => {
+		onWrite(String(chunk));
+		const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+		completion?.(null);
+		return true;
+	}) as typeof process.stderr.write;
+
+	stderrTakeoverState = { originalStderrWrite };
+}
+
+export function restoreStderr(): void {
+	if (!stderrTakeoverState) {
+		return;
+	}
+
+	process.stderr.write = stderrTakeoverState.originalStderrWrite;
+	stderrTakeoverState = undefined;
 }
 
 export function isStdoutTakenOver(): boolean {

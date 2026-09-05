@@ -6,7 +6,6 @@ import {
 	type Component,
 	clippedFullscreenDockHeight,
 	type Focusable,
-	ProcessTerminal,
 	setKeybindings,
 	TUI,
 	truncateToWidth,
@@ -49,6 +48,7 @@ import { CustomEditor } from "../interactive/components/custom-editor.js";
 import { keyText } from "../interactive/components/keybinding-hints.js";
 import { BrandSplashHeader, InteractiveMode } from "../interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../interactive/interactive-mode-services.js";
+import { InteractiveTerminal } from "../interactive/interactive-terminal.js";
 import { ClientPromptStashStore } from "../interactive/prompt-stash-state.js";
 import {
 	getEditorTheme,
@@ -735,7 +735,15 @@ export class AgentsViewMode implements Component, Focusable {
 		setRegisteredThemes(options.uiServices.getThemes());
 		initTheme(options.uiServices.settingsManager.getTheme(), true);
 
-		this.ui = new TUI(new ProcessTerminal(), options.uiServices.settingsManager.getShowHardwareCursor());
+		this.ui = new TUI(
+			new InteractiveTerminal((summary, logPath) => {
+				this.setStatusMessage(`Background error: ${summary} (full output: ${logPath})`, {
+					tone: "error",
+					sticky: true,
+				});
+			}),
+			options.uiServices.settingsManager.getShowHardwareCursor(),
+		);
 		this.ui.setClearOnShrink(options.uiServices.settingsManager.getClearOnShrink());
 		this.ui.terminal.setTitle(`${APP_TITLE} - Agents`);
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {

@@ -1,0 +1,1 @@
+- Fixed transient background errors flashing and disappearing by preserving them in the interactive transcript and client error log.

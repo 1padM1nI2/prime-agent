@@ -33,7 +33,6 @@ import {
 	type LoaderIndicatorOptions,
 	Markdown,
 	matchesKey,
-	ProcessTerminal,
 	Spacer,
 	setKeybindings,
 	Text,
@@ -252,6 +251,7 @@ import type {
 	InteractiveModeLocalToolRendererDefinition,
 	InteractiveModeUiServices,
 } from "./interactive-mode-services.js";
+import { InteractiveTerminal } from "./interactive-terminal.js";
 import {
 	isOnboardingModelReady,
 	type OnboardingStartupState,
@@ -1142,7 +1142,12 @@ export class InteractiveMode {
 			this.resetSideQuestion();
 		});
 		this.version = VERSION;
-		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
+		this.ui = new TUI(
+			new InteractiveTerminal((summary, logPath) => {
+				this.showError(`Background error: ${summary}\nFull output: ${logPath}`);
+			}),
+			this.settingsManager.getShowHardwareCursor(),
+		);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.ui.onCopy = (text) => {
 			void this.copyFullscreenSelection(text);
