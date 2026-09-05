@@ -33,8 +33,12 @@ import { promptYesNo } from "./daemon-stop-confirm.js";
  *     kernel keeps is the only reliable way to find daemons on arbitrary
  *     `--daemon-socket` paths. This is the same data as `ss -lxp | grep
  *     prime-agent`, just parsed.
- *  2. A sweep of the default socket dir, which catches orphaned socket *files*
- *     left behind by daemons that are no longer running.
+ *  2. On Windows, the default named pipe (`\\.\pipe\prime-agent-daemon`), which
+ *     has no filesystem footprint and no listener enumeration: a live daemon on
+ *     it reports as current, a dead one as an unreachable/orphan entry (the
+ *     latter is dropped for the default pipe since it leaves no file behind).
+ *  3. A sweep of the default socket dir (Unix only), which catches orphaned
+ *     socket *files* left behind by daemons that are no longer running.
  *
  * Each discovered socket is then probed with the existing daemon_hello + list
  * primitives, so introspection works even against stale daemons running an
@@ -355,12 +359,16 @@ export async function discoverDaemons(): Promise<DaemonInfo[]> {
 	const workerSockets = new Set(
 		findAllTrackedWorkers().map((worker) => normalizeSocketPath(worker.descriptor.supervisorSocketPath)),
 	);
+	const defaultSocket = normalizeSocketPath(defaultDaemonSocketPath());
 	const sockets = new Set<string>([
 		...processBySocket.keys(),
 		...scanSocketDir().filter((socketPath) => !isWorkerSocketPath(socketPath)),
 		...workerSockets,
+		// Windows has no socket-dir sweep or listener enumeration; the default
+		// named pipe is always a known candidate, so a running daemon is never
+		// invisible to status/shutdown.
+		...(process.platform === "win32" ? [defaultSocket] : []),
 	]);
-	const defaultSocket = normalizeSocketPath(defaultDaemonSocketPath());
 
 	const infos = await Promise.all(
 		[...sockets].map(async (socketPath): Promise<DaemonInfo> => {
@@ -392,7 +400,14 @@ export async function discoverDaemons(): Promise<DaemonInfo[]> {
 		}),
 	);
 
-	return sortDaemons(infos);
+	return sortDaemons(
+		infos.filter(
+			// A dead default pipe on Windows has no file behind it; without the drop
+			// every clean machine would report a phantom orphan entry.
+			(info) =>
+				!(process.platform === "win32" && info.socketPath === defaultSocket && info.status === "orphan-file"),
+		),
+	);
 }
 
 export function sortDaemons(infos: DaemonInfo[]): DaemonInfo[] {

@@ -1,0 +1,1 @@
+- Fixed `status`/`shutdown`/`doctor` missing a running daemon on Windows when no workers were tracked: the default named pipe is now always a discovery candidate.
