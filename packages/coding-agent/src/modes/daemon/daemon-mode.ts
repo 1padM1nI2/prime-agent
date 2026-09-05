@@ -180,6 +180,7 @@ import {
 import { DaemonSessionSummarizer } from "./daemon-session-summarizer.js";
 import {
 	cleanupDaemonSocketPath,
+	closeDaemonServer,
 	type DaemonSocketIdentity,
 	defaultDaemonSocketPath,
 	getDaemonSocketIdentity,
@@ -7366,13 +7367,7 @@ export class AgentDaemon {
 			client.detachInput();
 			client.socket.end();
 		}
-		await new Promise<void>((resolveClose) => {
-			if (!this.server) {
-				resolveClose();
-				return;
-			}
-			this.server.close(() => resolveClose());
-		});
+		await closeDaemonServer(this.server);
 		this.cleanupSocketPath();
 		process.exit(exitCode);
 	}

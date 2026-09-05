@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
@@ -12,6 +12,7 @@ const DAEMON_SOCKET_RELEASE_GRACE_MS = 1000;
 const DAEMON_SOCKET_RELEASE_POLL_MS = 25;
 const DAEMON_SOCKET_LOCK_STALE_MS = 5000;
 const DAEMON_SOCKET_LOCK_UPDATE_MS = 1000;
+const DAEMON_SERVER_CLOSE_TIMEOUT_MS = 5000;
 
 type DaemonSocketCompromiseListener = (error: Error) => void;
 
@@ -60,6 +61,50 @@ export class DaemonSocketPathLease {
 			// A lease callback must not rethrow from proper-lockfile's refresh callback.
 		}
 	}
+}
+
+/**
+ * Stop a daemon socket server and wait for it to close, with a timeout
+ * fallback. On some runtimes (bun on Windows) the `net.Server` close callback
+ * never fires while a named-pipe client connection is still draining, which
+ * would otherwise hang the daemon's exit path indefinitely. On Node the
+ * callback settles in milliseconds, so the timeout never engages. The timeout
+ * is bounded so it stays within the client's shutdown connectivity deadline.
+ * A server that is already closed or never listened resolves immediately; a
+ * `close()` call that throws rejects, so callers keep their usual failure
+ * reporting for that path.
+ */
+export async function closeDaemonServer(
+	server: Server | undefined,
+	timeoutMs = DAEMON_SERVER_CLOSE_TIMEOUT_MS,
+): Promise<void> {
+	if (!server || !server.listening) {
+		return;
+	}
+	await new Promise<void>((resolve, reject) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (!settled) {
+				settled = true;
+				resolve();
+			}
+		}, timeoutMs);
+		try {
+			server.close(() => {
+				clearTimeout(timer);
+				if (!settled) {
+					settled = true;
+					resolve();
+				}
+			});
+		} catch (error) {
+			clearTimeout(timer);
+			if (!settled) {
+				settled = true;
+				reject(error);
+			}
+		}
+	});
 }
 
 export interface DaemonSocketIdentity {

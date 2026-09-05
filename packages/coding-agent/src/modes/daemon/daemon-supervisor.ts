@@ -120,6 +120,7 @@ import {
 import {
 	acquireDaemonSocketPathLease,
 	cleanupDaemonSocketPath,
+	closeDaemonServer,
 	type DaemonSocketIdentity,
 	type DaemonSocketPathLease,
 	defaultDaemonSocketDir,
@@ -6821,18 +6822,7 @@ export class DaemonSupervisor {
 		}
 		const server = this.server;
 		this.server = undefined;
-		const serverClosed = new Promise<void>((resolveClose) => {
-			if (!server?.listening) {
-				resolveClose();
-				return;
-			}
-			try {
-				server.close(() => resolveClose());
-			} catch (error) {
-				this.reportCleanupFailure("daemon server", error);
-				resolveClose();
-			}
-		});
+		const serverClosed = closeDaemonServer(server);
 		for (const client of this.clients) {
 			client.attachedActiveSessionIds.clear();
 			await this.runCleanupStep(`daemon client input ${client.id}`, () => client.detachInput());
@@ -6955,7 +6945,7 @@ export class DaemonSupervisor {
 			client.detachInput();
 			client.socket.end();
 		}
-		await new Promise<void>((resolveClose) => this.server?.close(() => resolveClose()) ?? resolveClose());
+		await closeDaemonServer(this.server);
 		await this.runCleanupStep("daemon socket", () => this.cleanupSocket());
 		await this.runCleanupStep("supervisor cache", () => {
 			rmSync(this.snapshotCacheRoot, { recursive: true, force: true });

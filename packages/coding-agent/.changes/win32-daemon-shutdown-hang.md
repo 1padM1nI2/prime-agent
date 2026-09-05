@@ -1,0 +1,1 @@
+- Fixed the daemon process hanging on exit on Windows (bun runtime) while a client connection was still open: closing the socket server now has a bounded timeout, so `shutdown` reliably stops the daemon within ~5s instead of waiting indefinitely for the close callback.

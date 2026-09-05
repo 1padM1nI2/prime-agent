@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
-import { createConnection, createServer } from "node:net";
+import { createConnection, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import {
 	cleanupDaemonSocketPath,
+	closeDaemonServer,
 	DaemonSocketPathLease,
 	defaultDaemonSocketPath,
 	getDaemonSocketIdentity,
@@ -286,5 +287,24 @@ describe.skipIf(process.platform === "win32")("DaemonSocketPathLease compromise 
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("closeDaemonServer", () => {
+	it("resolves immediately when there is no server or it is not listening", async () => {
+		await expect(closeDaemonServer(undefined)).resolves.toBeUndefined();
+		const notListening = { listening: false, close: () => {} } as unknown as Server;
+		await expect(closeDaemonServer(notListening, 20)).resolves.toBeUndefined();
+	});
+
+	it("settles within the timeout when the close callback never fires", async () => {
+		// A runtime where net.Server.close() defers its callback until a named-pipe
+		// connection drains (bun on Windows) must not hang the daemon's exit path.
+		const neverCloses = { listening: true, close: (_cb: () => void) => {} } as unknown as Server;
+		const started = Date.now();
+		await closeDaemonServer(neverCloses, 50);
+		const elapsed = Date.now() - started;
+		expect(elapsed).toBeGreaterThanOrEqual(40);
+		expect(elapsed).toBeLessThan(4000);
 	});
 });
