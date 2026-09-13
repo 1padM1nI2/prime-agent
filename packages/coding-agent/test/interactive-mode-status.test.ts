@@ -719,6 +719,7 @@ describe("InteractiveMode working timer", () => {
 			updateWorkingLoaderMessage: vi.fn(),
 			renderSessionContext: vi.fn(async () => {}),
 			restoreStreamingMessageFromSnapshot: vi.fn(async () => {}),
+			showLoadedResources: vi.fn(),
 			showStatus: vi.fn(),
 			stopWorkingLoader: vi.fn(),
 			createWorkingLoader: vi.fn(() => ({})),
@@ -737,6 +738,78 @@ describe("InteractiveMode working timer", () => {
 			timestamp,
 		};
 	}
+
+	test.each(["success", "snapshot failure", "render failure"])(
+		"releases deferred events after the last queued render: %s",
+		async (outcome) => {
+			const snapshot = { state: createConnectionState(), messages: [userMessage("Only one copy.", 100)] };
+			const firstSnapshot = createDeferred<AgentConnectionSnapshot>();
+			const lastSnapshot = createDeferred<AgentConnectionSnapshot>();
+			const flushBufferedSessionEvents = vi.fn(() => new Promise<void>(() => {}));
+			const harness = Object.assign(
+				{},
+				createInitialTimerHarness(snapshot),
+				createRenderSessionContextHarness().harness,
+				{
+					agentConnection: {
+						getInitialSnapshot: vi
+							.fn()
+							.mockReturnValueOnce(firstSnapshot.promise)
+							.mockReturnValueOnce(lastSnapshot.promise),
+						flushBufferedSessionEvents,
+					},
+					renderSessionContext: vi.fn(renderSessionContext),
+				},
+			);
+			Object.setPrototypeOf(harness, InteractiveMode.prototype);
+			const first = harness.renderInitialMessages();
+			const last = harness.renderInitialMessages();
+			const completion =
+				outcome === "success" ? expect(last).resolves.toBeUndefined() : expect(last).rejects.toThrow(outcome);
+			firstSnapshot.resolve(snapshot);
+			await first;
+			expect(flushBufferedSessionEvents).not.toHaveBeenCalled();
+			const firstChildren = [...harness.chatContainer.children];
+			expect(firstChildren.length).toBeGreaterThan(0);
+			if (outcome === "snapshot failure") lastSnapshot.reject(new Error(outcome));
+			else {
+				if (outcome === "render failure") harness.renderSessionContext.mockRejectedValueOnce(new Error(outcome));
+				lastSnapshot.resolve(snapshot);
+			}
+			await completion;
+			expect(flushBufferedSessionEvents).toHaveBeenCalledOnce();
+			expect(harness.chatContainer.children).toHaveLength(firstChildren.length);
+			if (outcome === "success") {
+				expect(harness.chatContainer.children.some((child) => firstChildren.includes(child))).toBe(false);
+			}
+		},
+	);
+
+	test("preserves resource diagnostics through initial and repeated transcript renders", async () => {
+		const snapshot = { state: createConnectionState(), messages: [userMessage("Hello.", 100)] };
+		const harness = Object.assign(
+			{},
+			createInitialTimerHarness(snapshot),
+			createRenderSessionContextHarness().harness,
+			{
+				options: { verbose: false },
+				connectionCommands: [],
+				connectionResourceSnapshot: {
+					diagnostics: { skills: [{ type: "warning", message: "Resource warning" }] },
+				},
+				formatDiagnostics: () => "Resource warning",
+				showLoadedResources: (InteractiveMode.prototype as unknown as { showLoadedResources(): void })
+					.showLoadedResources,
+				renderSessionContext,
+			},
+		);
+		Object.setPrototypeOf(harness, InteractiveMode.prototype);
+		for (let render = 0; render < 2; render++) {
+			await harness.renderInitialMessages();
+			const text = harness.chatContainer.render(80).join("\n");
+			expect(text.match(/Resource warning/g)).toHaveLength(1);
+		}
+	});
 
 	test("restores the first active-run starter instead of a steering message", async () => {
 		const harness = createInitialTimerHarness({
@@ -1509,6 +1582,7 @@ describe("InteractiveMode connection events", () => {
 			renderSessionContext: renderSessionContextMock,
 			restoreStreamingMessageFromSnapshot,
 			restoreTurnStartFromMessages: vi.fn(),
+			showLoadedResources: vi.fn(),
 			showStatus: vi.fn(),
 		} as unknown as InteractiveMode;
 
@@ -1524,11 +1598,13 @@ describe("InteractiveMode connection events", () => {
 		).toHaveBeenCalledTimes(2);
 		expect(renderSessionContextMock).toHaveBeenCalledTimes(2);
 		expect(renderSessionContextMock).toHaveBeenNthCalledWith(1, expect.anything(), {
+			clearChat: true,
 			updateFooter: true,
 			populateHistory: true,
 			limitTranscript: true,
 		});
 		expect(renderSessionContextMock).toHaveBeenNthCalledWith(2, expect.anything(), {
+			clearChat: true,
 			updateFooter: true,
 			populateHistory: true,
 			limitTranscript: true,
@@ -1800,7 +1876,11 @@ describe("InteractiveMode connection events", () => {
 		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBe(activeBashComponent);
 		expect(
 			(fakeThis as unknown as { renderSessionContext: ReturnType<typeof vi.fn> }).renderSessionContext,
-		).toHaveBeenCalledWith(expect.anything(), { clearChat: true, updateFooter: true });
+		).toHaveBeenCalledWith(expect.anything(), {
+			clearChat: true,
+			updateFooter: true,
+			limitTranscript: true,
+		});
 		expect(startAssistantStreamingMessage).toHaveBeenCalledWith(streamingMessage);
 		expect((fakeThis as unknown as { turnStartedAt: number | undefined }).turnStartedAt).toBe(100);
 		expect((fakeThis as unknown as { workingStartedAt: number | undefined }).workingStartedAt).toBe(100);
@@ -2163,7 +2243,7 @@ describe("InteractiveMode transcript rebuild", () => {
 
 		await fakeThis.rebuildChatFromMessages();
 
-		expect(fakeThis.renderSessionContext).toHaveBeenCalledWith(context, { clearChat: true });
+		expect(fakeThis.renderSessionContext).toHaveBeenCalledWith(context, { clearChat: true, limitTranscript: true });
 		expect(fakeThis.chatContainer.children).toEqual([rebuiltChild]);
 		expect(fakeThis.chatContainer.children).not.toContain(staleChild);
 	});
