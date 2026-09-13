@@ -945,6 +945,7 @@ export class InteractiveMode {
 	private keybindings: KeybindingsManager;
 	private version: string;
 	private isInitialized = false;
+	private initializationPromise: Promise<void> | undefined;
 	private onInputCallback?: (text: string | undefined) => void;
 	private submittedInputBehavior: "steer" | "followUp" = "steer";
 	private latestEditorPromptStash: PromptStash | undefined;
@@ -955,6 +956,7 @@ export class InteractiveMode {
 	private readonly retainedSubmissionGenerations = new WeakMap<PromptStash, number>();
 	private admitPendingStartupPrompts: (() => Promise<StartupPromptBarrierOutcome>) | undefined;
 	private agentsViewRequest: InteractiveModeRunResult["type"] | undefined;
+	private isReturningToAgentsView = false;
 	private loadingAnimation: Loader | undefined = undefined;
 	private workingMessage: string | undefined = undefined;
 	private workingVisible = true;
@@ -1528,7 +1530,8 @@ export class InteractiveMode {
 	}
 
 	async run(): Promise<InteractiveModeRunResult> {
-		await this.init();
+		this.initializationPromise = this.init();
+		await this.initializationPromise;
 		this.restorePromptStashOnOpen();
 
 		// Global, environment-scoped notices (app update, extension updates, tmux setup)
@@ -1702,14 +1705,16 @@ export class InteractiveMode {
 			}
 		};
 
-		await this.runStartupOnboarding();
-		showDeferredStartupNotifications();
-		showModelFallbackWarning();
-		void this.maybeWarnAboutAnthropicSubscriptionAuth();
-		void deliverStartupPrompts().then(
-			() => settleStartupPrompts("admitted"),
-			() => settleStartupPrompts("admitted"),
-		);
+		if (!this.isShuttingDown && !this.isReturningToAgentsView) {
+			await this.runStartupOnboarding();
+			showDeferredStartupNotifications();
+			showModelFallbackWarning();
+			void this.maybeWarnAboutAnthropicSubscriptionAuth();
+			void deliverStartupPrompts().then(
+				() => settleStartupPrompts("admitted"),
+				() => settleStartupPrompts("admitted"),
+			);
+		}
 
 		// Enter/Alt+Enter submit directly through AgentConnection. Wait for the
 		// lifecycle signal exactly once; a returned editor value has already been
@@ -2590,7 +2595,7 @@ export class InteractiveMode {
 			for (let drain = 0; drain <= HEARTBEAT_REFRESH_DRAIN_LIMIT; drain++) {
 				this.heartbeatRefreshRequested = false;
 				const heartbeats = await connection.listHeartbeats();
-				if (this.agentConnection !== connection) return;
+				if (this.isShuttingDown || this.isReturningToAgentsView || this.agentConnection !== connection) return;
 				this.applyHeartbeatCatalog(heartbeats);
 				if (!this.heartbeatRefreshRequested) return;
 			}
@@ -2877,7 +2882,8 @@ export class InteractiveMode {
 		}
 		this.refreshQueueSelectionFromState();
 		this.updatePendingMessagesDisplay();
-		await this.refreshHeartbeatCatalog().catch(() => undefined);
+		// Optional tray metadata must not delay opening or leaving a chat.
+		void this.refreshHeartbeatCatalog().catch(() => undefined);
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
@@ -4965,6 +4971,7 @@ export class InteractiveMode {
 				if (
 					submissionOutcome === "lifecycle-cancelled" ||
 					this.isShuttingDown ||
+					this.isReturningToAgentsView ||
 					this.agentsViewRequest ||
 					this.promptStashSessionId !== submissionSessionId
 				) {
@@ -4987,6 +4994,7 @@ export class InteractiveMode {
 					const rejectedDraft = submittedDraft ?? { text };
 					const canRestore =
 						!this.isShuttingDown &&
+						!this.isReturningToAgentsView &&
 						!this.agentsViewRequest &&
 						submissionGeneration === this.inputSubmissionGeneration &&
 						this.editor.getText().length === 0;
@@ -5010,7 +5018,7 @@ export class InteractiveMode {
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 			} finally {
-				if (this.isShuttingDown || this.agentsViewRequest) {
+				if (this.isShuttingDown || this.isReturningToAgentsView || this.agentsViewRequest) {
 					submissionOutcome = "lifecycle-cancelled";
 				}
 				if (
@@ -6862,10 +6870,13 @@ export class InteractiveMode {
 	}
 
 	private async returnToAgentsView(request: InteractiveModeRunResult["type"] = "agents_view"): Promise<void> {
-		if (this.isShuttingDown || this.agentsViewRequest) return;
-		this.stashDraftForAgentsView();
-		this.agentsViewRequest = request;
+		if (this.isShuttingDown || this.isReturningToAgentsView) return;
+		this.isReturningToAgentsView = true;
+		// Keep startup's connection alive without blocking an explicit shutdown.
+		await this.initializationPromise?.catch(() => undefined);
+		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
+		this.stashDraftForAgentsView();
 		this.unregisterSignalHandlers();
 
 		await this.teardownSessionUi({ preserveAltScreen: true });
@@ -6875,6 +6886,7 @@ export class InteractiveMode {
 				await this.agentConnection.dispose();
 			} finally {
 				await this.options.onShutdown?.();
+				this.agentsViewRequest = request;
 				this.onInputCallback?.(undefined);
 				handoffComplete = true;
 			}
