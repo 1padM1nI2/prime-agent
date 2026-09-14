@@ -230,7 +230,9 @@ import {
 	getGlobalHarnessStateDir,
 	getLocalHarnessStateDir,
 	getRefinementHistory,
+	type HarnessQueryTerms,
 	type HarnessState,
+	harnessQueryTerms,
 	inferRefinementResultScope,
 	loadGlobalRefinementHistory,
 	loadHarnessState,
@@ -8855,7 +8857,47 @@ export class AgentSession {
 			includeIpythonExamples: hasIpython,
 			includeShellExamples: tools.includes("bash"),
 			includeRefineExamples: hasIpython && hasRefineSkill,
+			queryTerms: this._buildHarnessDigestQueryTerms(),
 		});
+	}
+
+	/**
+	 * Relevance signal for the harness digest: terms from the active goal
+	 * objective (strongest) and the last few user/assistant messages,
+	 * newest first. Term overlap is cheap and capped so scoring stays trivial.
+	 */
+	private _buildHarnessDigestQueryTerms(): HarnessQueryTerms {
+		const terms = new Map<string, number>();
+		const addText = (text: string | undefined, weight: number) => {
+			if (!text) return;
+			for (const raw of harnessQueryTerms(text)) {
+				if (terms.size >= 48 && !terms.has(raw)) return;
+				if (!terms.has(raw)) terms.set(raw, weight);
+			}
+		};
+		addText(this._goalState.objective, 3);
+		const recent = this.agent.state.messages
+			.filter(
+				(message): message is UserMessage | AssistantMessage =>
+					message.role === "user" || message.role === "assistant",
+			)
+			.slice(-4)
+			.reverse();
+		let recencyWeight = 2;
+		for (const message of recent) {
+			const text =
+				message.role === "assistant"
+					? readAssistantText(message)
+					: typeof message.content === "string"
+						? message.content
+						: message.content
+								.filter((block): block is TextContent => block.type === "text")
+								.map((block) => block.text)
+								.join(" ");
+			addText(text, recencyWeight);
+			recencyWeight = Math.max(1, recencyWeight - 0.5);
+		}
+		return terms;
 	}
 
 	/** Cold-boundary digest delivery: empty contexts defer to the first committed turn (untouched sessions must stay empty); non-empty contexts append only when the newest in-context digest mismatches disk. */
