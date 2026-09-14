@@ -29,6 +29,7 @@ import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
+	isFocusable,
 	Loader,
 	type LoaderIndicatorOptions,
 	Markdown,
@@ -1050,6 +1051,7 @@ export class InteractiveMode {
 	private connectionModelsRefreshVersion = 0;
 	private connectionModelsRefreshInFlight: { version: number; promise: Promise<AgentConnectionModel[]> } | undefined;
 	private closeConfigurationMenu: (() => void) | undefined;
+	private inlineAuthPanelClosers: (() => void)[] = [];
 	private configurationModelSelection: Promise<void> | undefined;
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
@@ -1896,7 +1898,9 @@ export class InteractiveMode {
 		}
 
 		splash.showProgress("Signing in to Prime Intellect...");
-		const authResult = await this.createAuthFlows().runPrimeInferenceLogin();
+		// The splash covers the whole screen, so the login panel must render as an
+		// overlay above it instead of inline behind it.
+		const authResult = await this.createAuthFlows({ overlay: true }).runPrimeInferenceLogin();
 		if (authResult.status !== "success") {
 			splash.dismiss();
 			return;
@@ -3578,6 +3582,12 @@ export class InteractiveMode {
 	}
 
 	private resetExtensionUI(): void {
+		// Close inline auth panels before the configuration menu so a restored
+		// menu is still torn down by the closeConfigurationMenu call below.
+		// Innermost panels close first, ending at the pre-login content.
+		for (const close of this.inlineAuthPanelClosers.splice(0).reverse()) {
+			close();
+		}
 		this.closeConfigurationMenu?.();
 		this.cancelActiveConnectionExtensionUiRequests();
 		this.closeHeartbeatManager();
@@ -8372,7 +8382,6 @@ export class InteractiveMode {
 							this.getCachedModelCandidates(),
 							this.connectionConfiguredProviders,
 						);
-						menu.setActiveTab("models");
 						refreshModels(true);
 					})
 					.catch((error) => {
@@ -8846,12 +8855,26 @@ export class InteractiveMode {
 		});
 	}
 
-	private createAuthFlows(): ProviderAuthFlows {
+	private createAuthFlows(options: { overlay?: boolean } = {}): ProviderAuthFlows {
+		const showAuthPanel = options.overlay
+			? (component: Component) => {
+					const handle = this.showFullPaneOverlay(component, {
+						maxContentWidth: 88,
+						suspendFullscreenMouse: true,
+					});
+					return () => {
+						handle.hide();
+						this.ui.requestRender();
+					};
+				}
+			: (component: Component) => this.showInlineAuthPanel(component);
 		return new ProviderAuthFlows({
 			ui: this.ui,
 			modelRegistry: this.modelRegistry,
 			showStatus: (message) => this.showStatus(message),
 			showError: (message) => this.showError(message),
+			showAuthPanel,
+			getAuthPanelRows: () => Math.max(1, Math.min(20, this.ui.terminal.rows - 3)),
 			getAvailableModels: () => this.getConnectionAvailableModels(),
 			onAuthChanged: async () => {
 				await this.refreshConnectionModelsAfterAuthChange();
@@ -8863,6 +8886,40 @@ export class InteractiveMode {
 				void this.maybeWarnAboutAnthropicSubscriptionAuth();
 			},
 		});
+	}
+
+	/**
+	 * Mount a provider-auth panel inline in place of the prompt area, matching
+	 * the inline pickers. Returns a callback that unmounts the panel and
+	 * restores the previous content and focus. Closers are tracked in a stack
+	 * because in-flow selectors mount on top of the login dialog;
+	 * resetExtensionUI tears the whole stack down on session resets. Each
+	 * closer runs once, so a reset cannot stomp a picker opened afterwards.
+	 */
+	private showInlineAuthPanel(component: Component): () => void {
+		const previousChildren = [...this.editorContainer.children];
+		const previousFocus = previousChildren.find((child) => isFocusable(child) && child.focused) ?? this.editor;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(component);
+		this.ui.setFocus(component);
+		this.ui.requestRender();
+		let closed = false;
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			const index = this.inlineAuthPanelClosers.indexOf(close);
+			if (index !== -1) {
+				this.inlineAuthPanelClosers.splice(index, 1);
+			}
+			this.editorContainer.clear();
+			for (const child of previousChildren) {
+				this.editorContainer.addChild(child);
+			}
+			this.ui.setFocus(previousFocus);
+			this.ui.requestRender();
+		};
+		this.inlineAuthPanelClosers.push(close);
+		return close;
 	}
 
 	private async prepareForModelSelectionAfterLogin(authResult: AuthenticationResult): Promise<boolean> {
