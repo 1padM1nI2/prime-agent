@@ -260,6 +260,8 @@ import {
 	createRlmListSubagentsHostHandler,
 	createRlmRunHostHandler,
 	findRlmModelMatches,
+	findUniqueRlmShortFormModelMatch,
+	formatRlmModelUnavailableError,
 	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
 	normalizeRequestedRlmSubagentThinkingLevel,
@@ -11518,11 +11520,17 @@ export class AgentSession {
 			}
 			return { model: parentModel };
 		}
-		const model = (await this._authenticatedRlmModels()).find(
-			(candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === normalizedReference,
-		);
+		const candidates = await this._authenticatedRlmModels();
+		// The parent model can be missing from the authenticated catalog (offline
+		// discovery or expired credentials) while staying selectable, so it backs
+		// the short-form lookup when the catalog has no match. Several catalog
+		// matches still leave the reference unresolved.
+		const model =
+			candidates.find(
+				(candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === normalizedReference,
+			) ?? findUniqueRlmShortFormModelMatch(reference, candidates, parentModel);
 		if (!model) {
-			throw new Error(`Requested ${target} model "${reference}" is unavailable, unauthenticated, or expired`);
+			throw new Error(formatRlmModelUnavailableError(reference, target, candidates));
 		}
 
 		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
