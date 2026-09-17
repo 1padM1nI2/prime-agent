@@ -983,6 +983,22 @@ describe("harness digest relevance ranking", () => {
 		expect(() => formatHarnessStateForPrompt(state, { queryTerms: new Map([["worktree", 1]]) })).not.toThrow();
 	});
 
+	it("breaks score ties by stable identifier order, not recency", () => {
+		const state = loadHarnessState(join(makeTempDir(), "h2"), "local");
+		const older = makeEntry("aaa", "Worktree policy", "Same worktree signal.", "2026-08-01T00:00:00.000Z");
+		const newer = makeEntry("zzz", "Worktree policy", "Same worktree signal.", "2026-09-01T00:00:00.000Z");
+		state.entries.memory.aaa = older;
+		state.entries.memory.zzz = newer;
+		const ranked = formatHarnessStateForPrompt(state, {
+			maxEntriesPerKind: 1,
+			queryTerms: new Map([["worktree", 1]]),
+		});
+		// Equal scores render in stable identifier order ([path, title, id]);
+		// updated_at recency must not hoist the newer entry into the window.
+		expect(ranked).toContain("[global:aaa]");
+		expect(ranked).not.toContain("[global:zzz]");
+	});
+
 	it.each<[string, string[]]>([
 		["Worktree?", ["worktree"]],
 		["path/to/skill", ["path", "skill"]],

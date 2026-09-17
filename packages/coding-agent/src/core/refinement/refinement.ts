@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -19,6 +20,17 @@ const REFINEMENT_HISTORY_FILE_NAME = "refinements.jsonl";
 const DEFAULT_OVERVIEW_ENTRY_LIMIT = 6;
 const DEFAULT_OVERVIEW_REFINEMENT_LIMIT = 5;
 const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
+
+/**
+ * Bump when the fingerprinted material or its canonical serialization changes,
+ * so fingerprints minted under different versions never compare equal.
+ * Normalizing a render-ignored flag out of the material does not need a
+ * bump: fingerprint equality still implies identical renders (with IPython
+ * examples off the normalization is a no-op; with them on, equality means
+ * the shell flag was already false, i.e. identical renders), so equality
+ * across the change is render-safe.
+ */
+const HARNESS_DIGEST_FINGERPRINT_VERSION = 1;
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
@@ -587,9 +599,9 @@ function compareRankedHarnessEntries(
 ): number {
 	const scoreDifference = scoreHarnessEntryForQuery(b, terms, idf) - scoreHarnessEntryForQuery(a, terms, idf);
 	if (scoreDifference !== 0) return scoreDifference;
-	// Recency breaks ties; alphabetical order keeps selection deterministic.
-	const recencyDifference = (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0);
-	if (recencyDifference !== 0) return recencyDifference;
+	// Equal scores tie on stable identifier order (path, title, id), so
+	// touching unrelated entries never reshuffles equal-score siblings and the
+	// rendered digest keeps a stable prefix for provider prompt-cache reuse.
 	return [a.path, a.title, a.id].join("\0").localeCompare([b.path, b.title, b.id].join("\0"));
 }
 
@@ -698,6 +710,70 @@ export function formatHarnessStateForPrompt(
 	}
 
 	return lines.join("\n").trim();
+}
+
+/**
+ * Stable fingerprint of the harness material a digest renders. Equal states
+ * (per the fields the digest actually prints) produce equal fingerprints, so
+ * cold boundaries can skip digest re-delivery with a state comparison instead
+ * of a rendered-text comparison that query-term relevance keeps invalidating.
+ *
+ * Covered: entry identity and content (entry order is normalized away, as is
+ * the call contract on non-skill entries, which the formatter never prints),
+ * plus the render flags and each refinement's printed fields in stored order,
+ * since the formatter renders a positional newest tail. The shell-examples
+ * flag participates only when IPython examples are not rendered: the formatter
+ * never reads it then, so it is normalized out of the fingerprint to keep an
+ * unchanged digest fresh. Excluded: `metadata`, `source`, and the invisible
+ * `created_at`/`updated_at` bookkeeping, and relevance query terms (the
+ * digest stays frozen per delivery; see `compareRankedHarnessEntries`).
+ */
+export function harnessDigestFingerprint(
+	state: HarnessState,
+	renderFlags: {
+		includeIpythonExamples: boolean;
+		includeShellExamples: boolean;
+		includeRefineExamples: boolean;
+	},
+): string {
+	const entries = (Object.keys(state.entries) as RefinementKind[])
+		.flatMap((kind) => Object.values(state.entries[kind]))
+		.map((entry) => ({
+			scope: entry.scope ?? "global",
+			kind: entry.kind,
+			id: entry.id,
+			title: entry.title,
+			path: entry.path,
+			version: entry.version,
+			content: entry.content,
+			// Only skills render the kernel call contract, so another kind can
+			// change these fields without changing a single digest byte.
+			reference: entry.kind === "skill" ? entry.reference : undefined,
+			arguments: entry.kind === "skill" ? entry.arguments : undefined,
+		}))
+		.sort((a, b) => [a.scope, a.kind, a.id].join("\0").localeCompare([b.scope, b.kind, b.id].join("\0")));
+	// Refinements keep their stored order: the formatter renders the newest
+	// tail of the array, so an order-only change renders differently and must
+	// not reuse the previous digest.
+	const refinements = state.refinements.map((event) => ({
+		id: event.id,
+		trigger: event.trigger,
+		changes: event.changes,
+		outcome: event.outcome,
+	}));
+	// The formatter renders the shell call-contract only when IPython examples
+	// are absent, so the shell flag cannot change the digest while IPython
+	// examples take precedence; fingerprint only the flags the render reads.
+	const effectiveRenderFlags = renderFlags.includeIpythonExamples
+		? { ...renderFlags, includeShellExamples: false }
+		: renderFlags;
+	const material = JSON.stringify({
+		version: HARNESS_DIGEST_FINGERPRINT_VERSION,
+		renderFlags: effectiveRenderFlags,
+		entries,
+		refinements,
+	});
+	return createHash("sha256").update(material).digest("hex");
 }
 
 function overviewForPrompt(state: HarnessState): string {
