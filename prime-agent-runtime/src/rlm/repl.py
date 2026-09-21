@@ -8,7 +8,6 @@ next to this file. Cells execute with top-level await in one persistent
 from __future__ import annotations
 
 import ast
-import asyncio
 import codecs
 import contextvars
 import ctypes
@@ -20,7 +19,6 @@ import os
 import platform
 import signal
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -45,10 +43,22 @@ _protocol_fd: int = -1
 _write_lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
 _serve_task: asyncio.Task[Any] | None = None
-# Attribution rides task context: asyncio tasks copy it at creation, so a
-# detached task spawned by a cell keeps writing under that cell's id after
-# the cell finishes. Threads start with a fresh context and emit id null.
+
+
+class _CellExecution:
+    def __init__(self) -> None:
+        import asyncio
+
+        self.finished = asyncio.Event()
+        self.owner: asyncio.Task[Any] | None = None
+
+
+# Asyncio tasks copy cell context at creation, so detached tasks retain their
+# output attribution and completion barrier. Threads start with a fresh context.
 _current_cell: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_cell", default=None)
+_current_cell_execution: contextvars.ContextVar[_CellExecution | None] = contextvars.ContextVar(
+    "_current_cell_execution", default=None
+)
 _active: dict[str, Any] = {"task": None, "rid": None, "interrupted": False}
 _cell_counter = 0
 _pending_host: dict[str, "asyncio.Future[dict[str, Any]]"] = {}
@@ -96,6 +106,24 @@ def emit(data: dict[str, Any]) -> None:
 def is_active() -> bool:
     """True when this process serves the repl protocol (not merely imported)."""
     return _protocol_fd >= 0
+
+
+def current_cell_completion_context() -> tuple[asyncio.Event, asyncio.Task[Any] | None] | None:
+    """Return the calling cell's completion barrier and owning execution task."""
+    execution = _current_cell_execution.get()
+    if execution is None:
+        return None
+    return execution.finished, execution.owner
+
+
+def active_cell_task() -> asyncio.Task[Any] | None:
+    """The cell body task executing right now, or None between cells (global
+    state, not the cell contextvar — detached tasks keep stale context copies)."""
+    import asyncio
+
+    with _interrupt_lock:
+        task = _active["task"]
+    return task if isinstance(task, asyncio.Task) and not task.done() else None
 
 
 async def host_request(data: dict[str, Any]) -> dict[str, Any]:
@@ -305,6 +333,10 @@ def _consume_task_exception(task: asyncio.Task[Any]) -> None:
 
 
 def _sigint_handler(signum: int, frame: types.FrameType | None) -> None:
+    # asyncio loads by the time any task can be active (main() imports it), so
+    # this is a cached sys.modules hit even inside the signal handler.
+    import asyncio
+
     global _handoff_interrupted
     task = _active["task"]
     # No lock (the main thread may hold it): the rid equality revalidates the
@@ -503,6 +535,8 @@ async def _run_codes(codes: list[types.CodeType], ns: dict[str, Any]) -> Any:
 
 async def _run_guarded(task: asyncio.Task[Any], rid: str) -> tuple[str, Any, dict[str, Any] | None]:
     """Await a request task; returns (status, value, error event or None)."""
+    import asyncio
+
     with _interrupt_lock:
         _active["interrupted"] = False
         _active["rid"] = rid
@@ -537,13 +571,14 @@ async def _handle_execute(req: dict[str, Any], ns: dict[str, Any]) -> None:
     cell_id = req["id"]
     _cell_counter += 1
     filename = f"<cell-{_cell_counter}>"
-    # The cell task (created below) copies this context, so writes made from
-    # the cell and from asyncio tasks it spawns carry this cell's id.
-    token = _current_cell.set(cell_id)
+    execution = _CellExecution()
+    cell_token = _current_cell.set(cell_id)
+    execution_token = _current_cell_execution.set(execution)
     try:
         codes, has_trailing = _compile_cell(req["code"], filename)
         assert _loop is not None
         task = _loop.create_task(_run_codes(codes, ns))
+        execution.owner = task
         status, value, error = await _run_guarded(task, cell_id)
         result_text: str | None = None
         try:
@@ -568,7 +603,10 @@ async def _handle_execute(req: dict[str, Any], ns: dict[str, Any]) -> None:
             _send(error)
         _send({"event": "done", "id": cell_id, "status": status})
     finally:
-        _current_cell.reset(token)
+        execution.owner = None
+        execution.finished.set()
+        _current_cell_execution.reset(execution_token)
+        _current_cell.reset(cell_token)
 
 
 def _drain_output() -> None:
@@ -614,6 +652,7 @@ def _snapshot_state(
     committed: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     import datetime
+    import tempfile
 
     try:
         import dill
@@ -821,6 +860,8 @@ def _restore_state(
 
 async def _handle_state(req: dict[str, Any], ns: dict[str, Any]) -> None:
     """Run snapshot/restore as an interruptible task and reply in the done event."""
+    import asyncio
+
     rid = req["id"]
     committed: list[dict[str, Any]] = []
 
@@ -1143,15 +1184,25 @@ def main() -> None:
     user_module.__dict__["__builtins__"] = __builtins__
     sys.modules["__main__"] = user_module
 
+    _send({"event": "ready", "protocol": PROTOCOL_VERSION, "python": platform.python_version()})
+
+    # The event-loop stack (asyncio plus its ssl, concurrent.futures, and
+    # logging imports) is the heaviest part of this module's boot chain; load
+    # it after the ready event so kernel startup stays lean. The loop, reader
+    # thread, and serve task all come up here before the host's first request
+    # can be served, and every function that references asyncio runs only
+    # after this point.
+    import asyncio
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    signal.signal(signal.SIGINT, _sigint_handler)
     threading.Thread(target=_read_requests, args=(stdin_fd, queue), daemon=True).start()
 
-    _send({"event": "ready", "protocol": PROTOCOL_VERSION, "python": platform.python_version()})
-
     _serve_task = _loop.create_task(_serve(queue, user_module.__dict__))
+    # _sigint_handler has no task to target before serving starts, so installing
+    # it earlier would silently swallow a Ctrl-C during this boot window; the
+    # default handler must stay in charge until the loop and serve task exist.
+    signal.signal(signal.SIGINT, _sigint_handler)
     # A KeyboardInterrupt escaping a cell or background task stops
     # run_until_complete; the interrupt is already recorded, so resume serving.
     while not _serve_task.done():

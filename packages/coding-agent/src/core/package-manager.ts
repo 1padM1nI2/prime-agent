@@ -1,4 +1,4 @@
-import { type ChildProcess, type ChildProcessByStdio, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -23,12 +23,11 @@ function getEnv(): NodeJS.ProcessEnv {
 }
 
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { CONFIG_DIR_NAME, getBundledSkillsDir } from "../config.js";
-import { shouldUseWindowsShell } from "../utils/child-process.js";
+import { shouldUseWindowsShell, spawnHidden, spawnSyncHidden } from "../utils/child-process.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
@@ -2348,7 +2347,6 @@ export class DefaultPackageManager implements PackageManager {
 
 	private spawnCommand(command: string, args: string[], options?: { cwd?: string }): ChildProcess {
 		return spawn(command, args, {
-			windowsHide: true,
 			cwd: options?.cwd,
 			stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
 			shell: shouldUseWindowsShell(command),
@@ -2360,10 +2358,9 @@ export class DefaultPackageManager implements PackageManager {
 		command: string,
 		args: string[],
 		options?: { cwd?: string; env?: Record<string, string> },
-	): ChildProcessByStdio<null, Readable, Readable> {
+	): ChildProcess {
 		const baseEnv = getEnv();
-		return spawn(command, args, {
-			windowsHide: true,
+		return spawnHidden(command, args, {
 			cwd: options?.cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			shell: shouldUseWindowsShell(command),
@@ -2430,8 +2427,7 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private runCommandSync(command: string, args: string[]): string {
-		const result = spawnSync(command, args, {
-			windowsHide: true,
+		const result = spawnSyncHidden(command, args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			encoding: "utf-8",
 			shell: shouldUseWindowsShell(command),
